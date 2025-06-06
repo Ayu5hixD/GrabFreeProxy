@@ -22,10 +22,6 @@ CHECK_URLS = [
         "jiotv",
         "http://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?channel_id=144&offset=0",
     ),
-    (
-        "tataplay",
-        "http://ts-api.videoready.tv/content-detail/pub/api/v1/channels?limit=5&ott=true",
-    ),
 ]
 
 
