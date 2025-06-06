@@ -42,6 +42,6 @@ jobs:
           requests.patch(
               'https://api.github.com/gists/$GIST_ID',
               headers={'Authorization': f'token $GIST_TOKEN'},
-              json={'files': {'gfp_proxy.json': {'content': json.dumps(content, indent=2)}}}
+              json={'files': {'proxy.json': {'content': json.dumps(content, indent=2)}}}
           )
           "
