@@ -16,7 +16,7 @@ import json, requests, aiohttp, re, asyncio, time, ipaddress, os
 from bs4 import BeautifulSoup
 
 # Configuration
-TIMEOUT = 10  # seconds
+TIMEOUT = 5  # seconds
 CHECK_URLS = [
    (
         "jiotv",
