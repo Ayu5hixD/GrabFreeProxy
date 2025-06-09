@@ -22,10 +22,6 @@ CHECK_URLS = [
         "jiotv",
         "http://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?channel_id=144&offset=0",
     ),
-   (
-        "jiotvData",
-        "https://jiotvapi.cdn.jio.com/apis/v3.0/getMobileChannelList/get/?langId=6&devicetype=phone&os=android&usertype=JIO&version=343",
-    ),
 ]
 
 
