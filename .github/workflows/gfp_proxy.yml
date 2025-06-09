@@ -3,7 +3,7 @@ name: GrabFreeProxy Hourly Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *" # Runs at minute 0 of every hour (e.g., 1:00, 2:00, etc.)
+    - cron: "*/20 * * * *" # Runs at every 20 minutes (e.g., 1:00, 1:20, 1:40, 2:00 etc.)
 
 jobs:
   update-proxies:
