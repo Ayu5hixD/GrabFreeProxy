@@ -22,6 +22,14 @@ CHECK_URLS = [
         "jiotv",
         "http://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?channel_id=144&offset=0",
     ),
+    (
+        "tplay_1",
+        "https://tm.tapi.videoready.tv/content-detail/pub/api/v1/channels/12/schedule",
+    ),
+   (
+        "tplay_2",
+        "https://ts-api.videoready.tv/content-detail/pub/api/v1/channels/12/schedule",
+    ),
 ]
 
 
