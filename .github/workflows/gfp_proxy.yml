@@ -3,18 +3,36 @@ name: GrabFreeProxy Hourly Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/20 * * * *" # Runs at every 20 minutes (e.g., 1:00, 1:20, 1:40, 2:00 etc.)
+    - cron: "*/20 * * * *"
 
 jobs:
   update-proxies:
     runs-on: ubuntu-latest
+
     strategy:
       matrix:
         python-version: ["3.12"]
 
     steps:
-      - uses: actions/checkout@v3
+      # ----------------------------------------
+      # Checkout with robust retry protection
+      # ----------------------------------------
+      - name: Checkout repository (with retries)
+        shell: bash
+        run: |
+          echo "Starting checkout with retry logic..."
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt..."
+            if git clone --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" .; then
+              echo "Checkout successful."
+              break
+            fi
+            echo "Checkout failed. Retrying in 15 seconds..."
+            sleep 15
+          done
+          git rev-parse HEAD || exit 1
 
+      # ----------------------------------------
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
@@ -29,19 +47,27 @@ jobs:
           chmod +x gfp.py
           python3 gfp.py
 
+      # ----------------------------------------
+      # Gist Update
+      # ----------------------------------------
       - name: Update Gist
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           pip install requests
-          python3 -c "
-          import requests, json
-          with open('gfp_proxy.json') as f:
-              content = json.load(f)
-          requests.patch(
-              'https://api.github.com/gists/$GIST_ID',
-              headers={'Authorization': f'token $GIST_TOKEN'},
-              json={'files': {'proxy.json': {'content': json.dumps(content, indent=2)}}}
-          )
-          "
+          python3 - << 'EOF'
+import requests, json, os
+
+gist_id = os.getenv("GIST_ID")
+token = os.getenv("GIST_TOKEN")
+
+with open('gfp_proxy.json') as f:
+    content = json.load(f)
+
+requests.patch(
+    f'https://api.github.com/gists/{gist_id}',
+    headers={'Authorization': f'token {token}'},
+    json={'files': {'proxy.json': {'content': json.dumps(content, indent=2)}}}
+)
+EOF
