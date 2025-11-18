@@ -17,20 +17,13 @@ jobs:
       # ----------------------------------------
       # Checkout with robust retry protection
       # ----------------------------------------
-      - name: Checkout repository (with retries)
-        shell: bash
-        run: |
-          echo "Starting checkout with retry logic..."
-          for attempt in 1 2 3 4 5; do
-            echo "Attempt $attempt..."
-            if git clone --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" .; then
-              echo "Checkout successful."
-              break
-            fi
-            echo "Checkout failed. Retrying in 15 seconds..."
-            sleep 15
-          done
-          git rev-parse HEAD || exit 1
+      - name: Checkout Repository (more stable)
+        uses: actions/checkout@v4
+        with:
+           fetch-depth: 1
+           persist-credentials: false
+           clean: true
+           retries: 5
 
       # ----------------------------------------
       - name: Set up Python ${{ matrix.python-version }}
