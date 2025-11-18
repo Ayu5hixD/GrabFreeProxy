@@ -57,17 +57,17 @@ jobs:
         run: |
           pip install requests
           python3 - << 'EOF'
-import requests, json, os
+          import requests, json, os
 
-gist_id = os.getenv("GIST_ID")
-token = os.getenv("GIST_TOKEN")
+          gist_id = os.getenv("GIST_ID")
+          token = os.getenv("GIST_TOKEN")
 
-with open('gfp_proxy.json') as f:
-    content = json.load(f)
+          with open('gfp_proxy.json') as f:
+             content = json.load(f)
 
-requests.patch(
-    f'https://api.github.com/gists/{gist_id}',
-    headers={'Authorization': f'token {token}'},
-    json={'files': {'proxy.json': {'content': json.dumps(content, indent=2)}}}
-)
-EOF
+          requests.patch(
+             f'https://api.github.com/gists/{gist_id}',
+             headers={'Authorization': f'token {token}'},
+             json={'files': {'proxy.json': {'content': json.dumps(content, indent=2)}}}
+          )
+          EOF
