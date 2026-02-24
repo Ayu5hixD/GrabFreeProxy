@@ -17,8 +17,10 @@ from bs4 import BeautifulSoup
 
 # Configuration
 TIMEOUT = 5  # seconds
+MAX_CONCURRENT_CHECKS = 200
+CONNECTOR_LIMIT = 500
 CHECK_URLS = [
-   (
+    (
         "jiotv",
         "http://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?channel_id=144&offset=0",
     ),
@@ -26,11 +28,51 @@ CHECK_URLS = [
         "tplay_1",
         "https://tm.tapi.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
     ),
-   (
+    (
         "tplay_2",
         "https://ts-api.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
     ),
 ]
+
+
+async def check_single_url(session, ip, port, website_name, url):
+    """Check one website through proxy"""
+    start = time.perf_counter()
+
+    try:
+        async with session.get(
+            url,
+            proxy=f"http://{ip}:{port}",
+        ) as resp:
+            await resp.release()
+            total_time = int((time.perf_counter() - start) * 1000)
+
+            return {
+                website_name + "_status": resp.status,
+                website_name + "_error": "no",
+                website_name + "_total_time": total_time,
+            }
+
+    except asyncio.TimeoutError:
+        return {
+            website_name + "_status": 408,
+            website_name + "_error": "timeout error",
+            website_name + "_total_time": None,
+        }
+
+    except aiohttp.ClientProxyConnectionError:
+        return {
+            website_name + "_status": 503,
+            website_name + "_error": "connection error",
+            website_name + "_total_time": None,
+        }
+
+    except Exception as e:
+        return {
+            website_name + "_status": 503,
+            website_name + "_error": f"unknown error: {e}",
+            website_name + "_total_time": None,
+        }
 
 
 def verify_ip_port(ip: str, port: str) -> bool:
@@ -108,6 +150,9 @@ class FreeProxyList(Source):
 
     def get_data(self):
         data = self.read_url()
+        if not data:
+            return []
+
         soup = BeautifulSoup(data, "lxml")
 
         table = soup.find("table", class_="table table-striped table-bordered")
@@ -116,7 +161,7 @@ class FreeProxyList(Source):
             return []
 
         result = []
-        for tr in table.find_all("tr"):
+        for tr in table.find_all("tr")[1:]:
             tds = tr.find_all("td")
             if len(tds) >= 2:
                 td_ip = tds[0].text.strip()
@@ -183,15 +228,20 @@ class ProxyDailyList(Source):
             ("_", int(time.time() * 1000)),
         )
 
-        response = requests.get(
-            "https://proxy-daily.com/api/serverside/proxies",
-            headers=headers,
-            params=params,
-        ).json()
+        try:
+            response = requests.get(
+                "https://proxy-daily.com/api/serverside/proxies",
+                headers=headers,
+                params=params,
+                timeout=10,
+            ).json()
+        except Exception as e:
+            print(f"ProxyDailyList error: {e}")
+            return []
 
         result = []
 
-        for item in response["data"]:
+        for item in response.get("data", []):
             ip = item["ip"]
             port = item["port"]
             if self.ip_pat.match(ip):
@@ -200,51 +250,51 @@ class ProxyDailyList(Source):
         return result if result else []
 
 
-async def check_proxy(proxy):
-    """Try to load content of several commonly known websites through proxy"""
-
-    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
-    result = dict()
+async def check_proxy(proxy, session, sem):
     ip, port = proxy
-    result["ip"] = ip
-    result["port"] = port
-    result["last_checked"] = datetime.now(timezone.utc).isoformat()
 
-    for website_name, url in CHECK_URLS:
-        try:
-            async with aiohttp.ClientSession(
-                timeout=timeout, connector=aiohttp.TCPConnector(ssl=False)
-            ) as session:
-                start = time.time()
-                status_code = 404
-                total_time = None
-                error_msg = "no"
-                async with session.get(
-                    url, proxy="http://{}:{}".format(ip, port)
-                ) as resp:
-                    status_code = resp.status
-                    await resp.text()
-                    end = time.time()
-                    total_time = int(round(end - start, 2) * 1000)
-        except asyncio.TimeoutError:
-            status_code = 408
-            error_msg = "timeout error"
-        except aiohttp.client_exceptions.ClientProxyConnectionError:
-            error_msg = "connection error"
-            status_code = 503
-        except Exception as e:
-            status_code = 503
-            error_msg = "unknown error: {}.".format(e)
-        finally:
-            result[website_name + "_status"] = status_code
-            result[website_name + "_error"] = error_msg
-            result[website_name + "_total_time"] = total_time
-    return result
+    async with sem:
+        result = {
+            "ip": ip,
+            "port": port,
+            "last_checked": datetime.now(timezone.utc).isoformat(),
+        }
+
+        tasks = [
+            check_single_url(session, ip, port, name, url) for name, url in CHECK_URLS
+        ]
+
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in responses:
+            result.update(r)
+
+        return result
 
 
 async def runner(complete_list):
-    tasks = [check_proxy(item) for item in complete_list]
-    return await asyncio.gather(*tasks)
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+
+    connector = aiohttp.TCPConnector(
+        ssl=False,
+        limit=CONNECTOR_LIMIT,
+        ttl_dns_cache=300,
+    )
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+
+    async with aiohttp.ClientSession(
+        timeout=timeout,
+        connector=connector,
+    ) as session:
+
+        tasks = [check_proxy(item, session, sem) for item in complete_list]
+
+        results = []
+        for chunk in asyncio.as_completed(tasks):
+            results.append(await chunk)
+
+        return results
 
 
 def main():
@@ -260,8 +310,8 @@ def main():
         result += job()
 
     # remove duplicates (ip, port)
-    complete_list = list(set(tuple(result)))
-    filtered_list = filter(lambda x: verify_ip_port(*x), complete_list)
+    complete_list = list({(ip, port) for ip, port in result})
+    filtered_list = [x for x in complete_list if verify_ip_port(*x)]
     result = asyncio.run(runner(filtered_list))
 
     return result
