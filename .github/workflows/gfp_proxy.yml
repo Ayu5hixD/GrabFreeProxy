@@ -3,11 +3,16 @@ name: GrabFreeProxy Hourly Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "*/30 * * * *"
 
+concurrency:
+  group: grabfreeproxy-${{ github.ref }}
+  cancel-in-progress: true
+  
 jobs:
   update-proxies:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
 
     strategy:
       matrix:
@@ -23,22 +28,20 @@ jobs:
            fetch-depth: 1
            persist-credentials: false
            clean: true
-           retries: 5
 
       # ----------------------------------------
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install Dependencies
         run: |
           pip install requests beautifulsoup4 aiohttp lxml
 
       - name: Run GrabFreeProxy Script
-        run: |
-          chmod +x gfp.py
-          python3 gfp.py
+        run: python gfp.py
 
       # ----------------------------------------
       # Gist Update
@@ -48,8 +51,7 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          pip install requests
-          python3 - << 'EOF'
+          python - << 'EOF'
           import requests, json, os
 
           gist_id = os.getenv("GIST_ID")
