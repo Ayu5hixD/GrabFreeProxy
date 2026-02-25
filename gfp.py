@@ -13,12 +13,19 @@ from urllib.error import URLError, HTTPError
 from operator import itemgetter
 from datetime import datetime, timezone
 import json, requests, aiohttp, re, asyncio, time, ipaddress, os
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 
 # Configuration
 TIMEOUT = 5  # seconds
-MAX_CONCURRENT_CHECKS = 200
-CONNECTOR_LIMIT = 500
+CPU = os.cpu_count() or 4
+MAX_CONCURRENT_CHECKS = min(150, CPU * 40)
+CONNECTOR_LIMIT = MAX_CONCURRENT_CHECKS * 2
+REQUEST_TIMEOUT_OBJ = aiohttp.ClientTimeout(
+    sock_connect=2,
+    sock_read=3,
+    total=4,
+)
 CHECK_URLS = [
     (
         "jiotv",
@@ -35,6 +42,21 @@ CHECK_URLS = [
 ]
 
 
+async def quick_tcp_check(ip, port, timeout=1.2):
+    loop = asyncio.get_running_loop()
+    start = time.perf_counter()
+
+    try:
+        transport, _ = await asyncio.wait_for(
+            loop.create_connection(lambda: asyncio.Protocol(), ip, int(port)),
+            timeout,
+        )
+        transport.close()
+        return (time.perf_counter() - start) <= 1.0
+    except Exception:
+        return False
+
+
 async def check_single_url(session, ip, port, website_name, url):
     """Check one website through proxy"""
     start = time.perf_counter()
@@ -43,6 +65,7 @@ async def check_single_url(session, ip, port, website_name, url):
         async with session.get(
             url,
             proxy=f"http://{ip}:{port}",
+            timeout=REQUEST_TIMEOUT_OBJ,
         ) as resp:
             await resp.release()
             total_time = int((time.perf_counter() - start) * 1000)
@@ -121,10 +144,77 @@ class Source:
         raise NotImplementedError
 
 
-class SpyList(Source):
-    """Get proxies from spys.me"""
+class FreeProxyWorldList(Source):
+    """Get proxies from freeproxy.world (paginated)"""
 
-    url = "https://spys.me/proxy.txt"
+    base_url = "https://www.freeproxy.world/"
+    max_pages = 3
+
+    def read_url(self):
+        return self.read_mech_url()
+
+    def get_data(self):
+        result = []
+        seen = set()
+
+        original_url = self.url if hasattr(self, "url") else self.base_url
+
+        for page in range(1, self.max_pages + 1):
+            try:
+                if page == 1:
+                    self.url = self.base_url
+                else:
+                    self.url = f"{self.base_url}?page={page}"
+
+                html = self.read_url()
+                if not html:
+                    continue
+
+                soup = BeautifulSoup(html, "lxml")
+                tbody = soup.find("tbody")
+                if not tbody:
+                    continue
+
+                rows = tbody.find_all("tr")
+
+                for row in rows:
+                    cols = row.find_all("td")
+                    if len(cols) < 7:
+                        continue
+
+                    try:
+                        ip = cols[0].get_text(strip=True)
+                        port = cols[1].get_text(strip=True)
+
+                        ptype = cols[5].get_text(strip=True).lower()
+                        # anonymity = cols[6].get_text(strip=True).lower()
+
+                        # keep only HTTP proxies (optional but recommended)
+                        if "http" not in ptype:
+                            continue
+
+                        if self.ip_pat.match(ip):
+                            key = f"{ip}:{port}"
+                            if key not in seen:
+                                seen.add(key)
+                                result.append((ip, port))
+
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                print(f"⚠️ FreeProxyWorld page {page} error: {e}")
+
+        # restore original URL (clean practice)
+        self.url = original_url
+
+        return result
+
+
+class OpenProxyList(Source):
+    """Get proxies from https://github.com/roosterkid/openproxylist"""
+
+    url = "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt"
 
     def get_data(self):
         data = self.read_url()
@@ -140,10 +230,58 @@ class SpyList(Source):
         return result if result else []
 
 
+class ProxyDBList(Source):
+    """Get proxies from proxydb.net (HTML parser version)"""
+
+    url = "https://proxydb.net/?protocol=http&protocol=https&country=&offset=0"
+
+    def get_data(self):
+        html = self.read_url()
+        result = []
+
+        if not html:
+            return result
+
+        try:
+            soup = BeautifulSoup(html, "lxml")
+
+            # find table body
+            tbody = soup.find("tbody")
+            if not tbody:
+                return result
+
+            rows = tbody.find_all("tr")
+
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) < 2:
+                    continue
+
+                # IP is in first column <a>
+                ip_tag = cols[0].find("a")
+                # Port is in second column <a>
+                port_tag = cols[1].find("a")
+
+                if not ip_tag or not port_tag:
+                    continue
+
+                ip = ip_tag.text.strip()
+                port = port_tag.text.strip()
+
+                # optional validation using your existing regex
+                if self.ip_pat.match(f"{ip}:{port}"):
+                    result.append((ip, port))
+
+        except Exception as e:
+            print(f"⚠️ ProxyDB parse error: {e}")
+
+        return result
+
+
 class FreeProxyList(Source):
     """Get proxies from free-proxy-list.net"""
 
-    url = "https://free-proxy-list.net"
+    url = "https://free-proxy-list.net/en/"
 
     def read_url(self):
         return self.read_mech_url()
@@ -250,51 +388,72 @@ class ProxyDailyList(Source):
         return result if result else []
 
 
-async def check_proxy(proxy, session, sem):
+async def check_proxy(proxy, session, sem, now_iso):
     ip, port = proxy
 
     async with sem:
+        if not await quick_tcp_check(ip, port):
+            return None
+
         result = {
             "ip": ip,
             "port": port,
-            "last_checked": datetime.now(timezone.utc).isoformat(),
+            "last_checked": now_iso,
         }
 
-        tasks = [
-            check_single_url(session, ip, port, name, url) for name, url in CHECK_URLS
-        ]
+        success_count = 0
 
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for r in responses:
+        for name, url in CHECK_URLS:
+            r = await check_single_url(session, ip, port, name, url)
             result.update(r)
+
+            if r[name + "_error"] == "no":
+                success_count += 1
+
+            # early success threshold
+            if success_count >= 2:
+                break
 
         return result
 
 
-async def runner(complete_list):
+async def runner(complete_list, batch_size=1000):
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     connector = aiohttp.TCPConnector(
         ssl=False,
         limit=CONNECTOR_LIMIT,
-        ttl_dns_cache=300,
+        ttl_dns_cache=86400,
+        enable_cleanup_closed=True,
+        keepalive_timeout=30,
     )
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+    headers = {
+        "Connection": "keep-alive",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    results = []
 
     async with aiohttp.ClientSession(
         timeout=timeout,
         connector=connector,
+        headers=headers,
     ) as session:
 
-        tasks = [check_proxy(item, session, sem) for item in complete_list]
+        for i in range(0, len(complete_list), batch_size):
+            batch = complete_list[i : i + batch_size]
 
-        results = []
-        for chunk in asyncio.as_completed(tasks):
-            results.append(await chunk)
+            tasks = [check_proxy(item, session, sem, now_iso) for item in batch]
 
-        return results
+            for coro in asyncio.as_completed(tasks):
+                r = await coro
+                if r:
+                    results.append(r)
+
+    return results
 
 
 def main():
@@ -302,17 +461,44 @@ def main():
 
     sources = [
         FreeProxyList().get_data,
-        SpyList().get_data,
+        OpenProxyList().get_data,
+        ProxyDBList().get_data,
+        FreeProxyWorldList().get_data,
         ProxyDailyList().get_data,
     ]
 
-    for job in sources:
-        result += job()
+    print("Fetching proxy lists from sources...")
+    print(
+        f"Using up to {CPU} CPU cores for concurrent checks (max {MAX_CONCURRENT_CHECKS} checks at once)"
+    )
+    print(f"Connector limit set to {CONNECTOR_LIMIT}")
+    # print("FreProxyList :", sources[0]())
+    # print("OpenProxyList :", sources[1]())
+    # print("ProxyDBList :", sources[2]())
+    # print("FreeProxyWorldList :", sources[3]())
+    # print("ProxyDailyList :", sources[4]())
+
+    with ThreadPoolExecutor(max_workers=len(sources)) as ex:
+        results = list(ex.map(lambda f: f(), sources))
+
+    for r in results:
+        result.extend(r)
 
     # remove duplicates (ip, port)
-    complete_list = list({(ip, port) for ip, port in result})
-    filtered_list = [x for x in complete_list if verify_ip_port(*x)]
-    result = asyncio.run(runner(filtered_list))
+    seen = set()
+    filtered_list = []
+
+    for ip, port in result:
+        if (ip, port) in seen:
+            continue
+        if verify_ip_port(ip, port):
+            seen.add((ip, port))
+            filtered_list.append((ip, port))
+    try:
+        result = asyncio.run(runner(filtered_list))
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+        return []
 
     return result
 
@@ -344,7 +530,7 @@ if __name__ == "__main__":
 
     to_json = {
         "status": "success",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "description": "List of free proxies with status information",
         "author": "snehkr",
         "generated_at": datetime.now(timezone.utc).isoformat(),
