@@ -39,10 +39,6 @@ CHECK_URLS = [
         "tplay_2",
         "https://ts-api.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
     ),
-    (
-        "tplay_3",
-        "https://kong-tatasky.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
-    ),
 ]
 
 
