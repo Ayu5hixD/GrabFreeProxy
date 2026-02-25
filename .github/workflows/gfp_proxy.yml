@@ -3,7 +3,7 @@ name: GrabFreeProxy Hourly Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/20 * * * *"
 
 concurrency:
   group: grabfreeproxy-${{ github.ref }}
