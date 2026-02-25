@@ -42,21 +42,6 @@ CHECK_URLS = [
 ]
 
 
-async def quick_tcp_check(ip, port, timeout=1.2):
-    loop = asyncio.get_running_loop()
-    start = time.perf_counter()
-
-    try:
-        transport, _ = await asyncio.wait_for(
-            loop.create_connection(lambda: asyncio.Protocol(), ip, int(port)),
-            timeout,
-        )
-        transport.close()
-        return (time.perf_counter() - start) <= 1.0
-    except Exception:
-        return False
-
-
 async def check_single_url(session, ip, port, website_name, url):
     """Check one website through proxy"""
     start = time.perf_counter()
@@ -392,27 +377,29 @@ async def check_proxy(proxy, session, sem, now_iso):
     ip, port = proxy
 
     async with sem:
-        if not await quick_tcp_check(ip, port):
-            return None
-
         result = {
             "ip": ip,
-            "port": port,
+            "port": int(port),
             "last_checked": now_iso,
         }
 
-        success_count = 0
+        tasks = [
+            check_single_url(session, ip, port, name, url) for name, url in CHECK_URLS
+        ]
 
-        for name, url in CHECK_URLS:
-            r = await check_single_url(session, ip, port, name, url)
-            result.update(r)
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-            if r[name + "_error"] == "no":
-                success_count += 1
-
-            # early success threshold
-            if success_count >= 2:
-                break
+        for (name, _), r in zip(CHECK_URLS, responses):
+            if isinstance(r, Exception):
+                result.update(
+                    {
+                        name + "_status": 503,
+                        name + "_error": f"gather error: {type(r).__name__}",
+                        name + "_total_time": None,
+                    }
+                )
+            else:
+                result.update(r)
 
         return result
 
