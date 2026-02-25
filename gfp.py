@@ -33,11 +33,11 @@ CHECK_URLS = [
     ),
     (
         "tplay_1",
-        "https://tm.tapi.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
+        "https://tm.tapi.videoready.tv/content-detail/pub/api/v1/channels/144/schedule",
     ),
     (
         "tplay_2",
-        "https://ts-api.videoready.tv/portal-search/pub/api/v1/channels/schedule?date=&languageFilters=&genreFilters=&limit=1&offset=0",
+        "https://ts-api.videoready.tv/content-detail/pub/api/v1/channels/8/schedule",
     ),
 ]
 
